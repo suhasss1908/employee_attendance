@@ -67,10 +67,25 @@ def shift_end_instant(day, emp):
     if she <= shs: d += timedelta(days=1)
     return datetime.combine(d, she, IST).astimezone(UTC)
 
-def compute_late_minutes(punch_in, shift_start):
+def compute_late_minutes(punch_in, shift_start, attendance_day=None):
     pi = dt_local(punch_in)
-    start = pi.replace(hour=int(shift_start[:2]), minute=int(shift_start[3:]), second=0, microsecond=0)
+
+    if attendance_day is not None:
+        shift_date = date.fromisoformat(attendance_day)
+        start_time = time.fromisoformat(shift_start)
+        start = datetime.combine(
+            shift_date, start_time, tzinfo=IST
+        )
+    else:
+        start = pi.replace(
+            hour=int(shift_start[:2]),
+            minute=int(shift_start[3:]),
+            second=0,
+            microsecond=0
+        )
+
     delta = (pi - start).total_seconds()
+
     return int(delta // 60) if delta > 600 else 0
 
 def compute_work_hours(punch_in, punch_out):
@@ -91,7 +106,7 @@ def derive_fields(doc, emp):
         doc.update(punch_in=None, punch_out=None, work_hours=None, late_minutes=0, overtime_minutes=0, half_day=False)
         return doc
     if pi is None: raise HTTPException(422, "presence status requires punch_in")
-    doc["late_minutes"] = compute_late_minutes(pi, emp["shift_start"])
+    doc["late_minutes"] = compute_late_minutes(pi, emp["shift_start"], doc["date"])
     if po is None:
         doc.update(work_hours=None, overtime_minutes=0, half_day=False)
     else:
@@ -179,17 +194,17 @@ class EmployeeIn(BaseModel):
 
 class PunchInIn(BaseModel):
     emp_code: str = Field(min_length=1)
-    punched_at: Optional[int] = None
+    punched_at: Optional[int] = Field(default=None, strict=True)
     status: Literal["PRESENT","WFH","ON_DUTY"] = "PRESENT"
 
 class PunchOutIn(BaseModel):
     emp_code: str = Field(min_length=1)
-    punched_at: Optional[int] = None
+    punched_at: Optional[int] = Field(default=None, strict=True)
 
 class RegularizeIn(BaseModel):
     status: Optional[Literal["PRESENT","WFH","ON_DUTY","ABSENT","LEAVE"]] = None
-    punch_in: Optional[int] = None
-    punch_out: Optional[int] = None
+    punch_in: Optional[int] = Field(default=None, strict=True)
+    punch_out: Optional[int] = Field(default=None, strict=True)         
     reason: str = Field(min_length=5, max_length=200)
     regularized_by: str = Field(min_length=1, max_length=50)
 
@@ -223,7 +238,7 @@ def punch_in(body: PunchInIn):
     ts = parse_epoch(body.punched_at)
     d = attendance_date(ts, emp)
     doc = {"emp_code":body.emp_code, "date":d, "status":body.status, "punch_in":ts, "punch_out":None,
-           "work_hours":None, "late_minutes":compute_late_minutes(ts,emp["shift_start"]), "overtime_minutes":0,
+           "work_hours":None, "late_minutes":compute_late_minutes(ts,emp["shift_start"],d), "overtime_minutes":0,
            "half_day":False, "history":[]}
     try: db.attendance_logs.insert_one(doc)
     except DuplicateKeyError: raise HTTPException(409, "already punched in for this date")
